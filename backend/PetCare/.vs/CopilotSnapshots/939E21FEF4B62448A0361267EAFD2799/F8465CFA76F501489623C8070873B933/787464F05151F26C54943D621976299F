@@ -1,0 +1,450 @@
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using PetCare.DTOs;
+using PetCare.Entities;
+using PetCare.Repositories;
+using System.Security.Claims;
+
+namespace PetCare.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class BoardingController : ControllerBase
+{
+    private readonly IUnitOfWork _unitOfWork;
+
+    public BoardingController(IUnitOfWork unitOfWork)
+    {
+        _unitOfWork = unitOfWork;
+    }
+
+    [Authorize]
+    [HttpPost("request")]
+    public async Task<ActionResult<ApiResponse<BoardingRequestDto>>> CreateBoardingRequest([FromBody] CreateBoardingRequestDto dto)
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            
+            // Verify pet exists and is for boarding
+            var pet = await _unitOfWork.Pets.GetByIdAsync(dto.PetId);
+            
+            if (pet == null)
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Pet not found"));
+            
+            if (!pet.IsForBoarding)
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Pet is not available for boarding"));
+            
+            if (pet.OwnerId == userId)
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Cannot board your own pet"));
+            
+            if (pet.IsAdopted)
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Pet is adopted and not available for boarding"));
+
+            // Validate dates
+            if (dto.StartDate >= dto.EndDate)
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Start date must be before end date"));
+            
+            if (dto.StartDate < DateTime.Today)
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Start date cannot be in the past"));
+
+            // Check if pet is already hidden (has pending boarding request)
+            if (pet.IsHidden)
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Pet is currently being considered for boarding by another user"));
+
+            // Check for overlapping requests
+            var overlappingRequests = await _unitOfWork.BoardingRequests.GetOverlappingRequestsAsync(dto.PetId, dto.StartDate, dto.EndDate);
+            
+            if (overlappingRequests.Any())
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Pet is already booked for this period"));
+
+            var pricePerDay = dto.CustomPricePerDay ?? pet.BoardingPricePerDay ?? 0;
+            var totalDays = (dto.EndDate - dto.StartDate).Days;
+            var totalAmount = pricePerDay * totalDays;
+
+            // Start a transaction to ensure data consistency
+            await _unitOfWork.BeginTransactionAsync();
+
+            try
+            {
+                // First, create and save the chat room
+                var chatRoom = new ChatRoom
+                {
+                    User1Id = pet.OwnerId,
+                    User2Id = userId,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                await _unitOfWork.ChatRooms.AddAsync(chatRoom);
+                // Save changes to get the chat room ID
+                await _unitOfWork.SaveChangesAsync();
+
+                // Now create the boarding request with the chat room ID
+                var boardingRequest = new BoardingRequest
+                {
+                    PetId = dto.PetId,
+                    OwnerId = pet.OwnerId,
+                    CustomerId = userId,
+                    StartDate = dto.StartDate,
+                    EndDate = dto.EndDate,
+                    PricePerDay = pricePerDay,
+                    TotalAmount = totalAmount,
+                    SpecialInstructions = dto.SpecialInstructions,
+                    ContactPhone = dto.ContactPhone,
+                    ContactAddress = dto.ContactAddress,
+                    Status = "Pending",
+                    ChatRoomId = chatRoom.Id // Set the chat room ID here
+                };
+
+                await _unitOfWork.BoardingRequests.AddAsync(boardingRequest);
+                
+                // Commit all changes
+                await _unitOfWork.CommitAsync();
+
+                // Load related data for response
+                var boardingRequestWithDetails = await _unitOfWork.BoardingRequests.GetWithDetailsAsync(boardingRequest.Id);
+                if (boardingRequestWithDetails == null)
+                    return StatusCode(500, ApiResponse<BoardingRequestDto>.ErrorResponse("Failed to load boarding request details"));
+
+                var response = new BoardingRequestDto
+                {
+                    Id = boardingRequestWithDetails.Id,
+                    PetId = boardingRequestWithDetails.PetId,
+                    PetName = boardingRequestWithDetails.Pet?.Name ?? "",
+                    PetImageUrl = boardingRequestWithDetails.Pet?.ImageUrl ?? "",
+                    OwnerId = boardingRequestWithDetails.OwnerId,
+                    OwnerName = boardingRequestWithDetails.Owner?.FullName ?? "",
+                    CustomerId = boardingRequestWithDetails.CustomerId,
+                    CustomerName = boardingRequestWithDetails.Customer?.FullName ?? "",
+                    StartDate = boardingRequestWithDetails.StartDate,
+                    EndDate = boardingRequestWithDetails.EndDate,
+                    PricePerDay = boardingRequestWithDetails.PricePerDay,
+                    TotalAmount = boardingRequestWithDetails.TotalAmount,
+                    SpecialInstructions = boardingRequestWithDetails.SpecialInstructions,
+                    ContactPhone = boardingRequestWithDetails.ContactPhone,
+                    ContactAddress = boardingRequestWithDetails.ContactAddress,
+                    Status = boardingRequestWithDetails.Status,
+                    CreatedAt = boardingRequestWithDetails.CreatedAt,
+                    UpdatedAt = boardingRequestWithDetails.UpdatedAt,
+                    ChatRoomId = chatRoom.Id // Include the chat room ID in the response
+                };
+
+                return Ok(ApiResponse<BoardingRequestDto>.SuccessResponse(response));
+            }
+            catch (Exception ex)
+            {
+                // If anything fails, roll back the transaction
+                await _unitOfWork.RollbackAsync();
+                throw new Exception($"Error creating boarding request: {ex.Message}", ex);
+            }
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, ApiResponse<BoardingRequestDto>.ErrorResponse($"Internal server error: {ex.Message}"));
+        }
+    }
+
+    [Authorize]
+    [HttpGet("my")]
+    public async Task<ActionResult<ApiResponse<IEnumerable<BoardingRequestDto>>>> GetMyBoardingRequests()
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            
+            var customerRequests = await _unitOfWork.BoardingRequests.GetByCustomerIdAsync(userId);
+            var ownerRequests = await _unitOfWork.BoardingRequests.GetByOwnerIdAsync(userId);
+            
+            var allRequests = customerRequests.Concat(ownerRequests)
+                .OrderByDescending(br => br.CreatedAt)
+                .ToList();
+
+            var response = allRequests.Select(br => new BoardingRequestDto
+            {
+                Id = br.Id,
+                PetId = br.PetId,
+                PetName = br.Pet?.Name ?? "",
+                PetImageUrl = br.Pet?.ImageUrl ?? "",
+                OwnerId = br.OwnerId,
+                OwnerName = br.Owner?.FullName ?? "",
+                CustomerId = br.CustomerId,
+                CustomerName = br.Customer?.FullName ?? "",
+                StartDate = br.StartDate,
+                EndDate = br.EndDate,
+                PricePerDay = br.PricePerDay,
+                TotalAmount = br.TotalAmount,
+                SpecialInstructions = br.SpecialInstructions,
+                ContactPhone = br.ContactPhone,
+                ContactAddress = br.ContactAddress,
+                Status = br.Status,
+                CreatedAt = br.CreatedAt,
+                UpdatedAt = br.UpdatedAt,
+                ChatRoomId = br.ChatRoomId // Include chat room ID in the response
+            });
+
+            return Ok(ApiResponse<IEnumerable<BoardingRequestDto>>.SuccessResponse(response));
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, ApiResponse<IEnumerable<BoardingRequestDto>>.ErrorResponse($"Internal server error: {ex.Message}"));
+        }
+    }
+
+    [Authorize]
+    [HttpGet("received-requests")]
+    public async Task<ActionResult<ApiResponse<IEnumerable<BoardingRequestDto>>>> GetReceivedBoardingRequests()
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            
+            var requests = await _unitOfWork.BoardingRequests.GetByOwnerIdAsync(userId);
+            var response = requests.Select(br => new BoardingRequestDto
+            {
+                Id = br.Id,
+                PetId = br.PetId,
+                PetName = br.Pet?.Name ?? "",
+                PetImageUrl = br.Pet?.ImageUrl ?? "",
+                OwnerId = br.OwnerId,
+                OwnerName = br.Owner?.FullName ?? "",
+                CustomerId = br.CustomerId,
+                CustomerName = br.Customer?.FullName ?? "",
+                StartDate = br.StartDate,
+                EndDate = br.EndDate,
+                PricePerDay = br.PricePerDay,
+                TotalAmount = br.TotalAmount,
+                SpecialInstructions = br.SpecialInstructions,
+                ContactPhone = br.ContactPhone,
+                ContactAddress = br.ContactAddress,
+                Status = br.Status,
+                CreatedAt = br.CreatedAt,
+                UpdatedAt = br.UpdatedAt,
+                ChatRoomId = br.ChatRoomId // Include chat room ID in the response
+            });
+
+            return Ok(ApiResponse<IEnumerable<BoardingRequestDto>>.SuccessResponse(response));
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, ApiResponse<IEnumerable<BoardingRequestDto>>.ErrorResponse($"Internal server error: {ex.Message}"));
+        }
+    }
+
+    [Authorize]
+    [HttpPut("{id:int}/status")]
+    public async Task<ActionResult<ApiResponse<BoardingRequestDto>>> UpdateBoardingStatus(int id, [FromBody] UpdateBoardingStatusDto dto)
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            
+            var boardingRequest = await _unitOfWork.BoardingRequests.GetWithDetailsAsync(id);
+            
+            if (boardingRequest == null)
+                return NotFound(ApiResponse<BoardingRequestDto>.ErrorResponse("Boarding request not found"));
+            
+            // Only owner can update status
+            if (boardingRequest.OwnerId != userId)
+                return Forbid("Only the pet owner can update boarding status");
+            
+            boardingRequest.Status = dto.Status;
+            boardingRequest.UpdatedAt = DateTime.UtcNow;
+            
+            // Handle pet visibility based on status
+            var pet = await _unitOfWork.Pets.GetByIdAsync(boardingRequest.PetId);
+            if (pet != null)
+            {
+                if (dto.Status == "Confirmed")
+                {
+                    // Hide pet when owner confirms (waiting for payment from customer)
+                    pet.IsHidden = true;
+                }
+                else if (dto.Status == "Declined")
+                {
+                    // Show pet again when declined
+                    pet.IsHidden = false;
+                }
+                else if (dto.Status == "InProgress")
+                {
+                    // Pet remains hidden during boarding
+                    pet.IsHidden = true;
+                }
+                else if (dto.Status == "Completed")
+                {
+                    // Show pet again when boarding is completed
+                    pet.IsHidden = false;
+                }
+                
+                await _unitOfWork.Pets.UpdateAsync(pet);
+            }
+            
+            await _unitOfWork.BoardingRequests.UpdateAsync(boardingRequest);
+            await _unitOfWork.SaveChangesAsync();
+
+            var response = new BoardingRequestDto
+            {
+                Id = boardingRequest.Id,
+                PetId = boardingRequest.PetId,
+                PetName = boardingRequest.Pet?.Name ?? "",
+                PetImageUrl = boardingRequest.Pet?.ImageUrl ?? "",
+                OwnerId = boardingRequest.OwnerId,
+                OwnerName = boardingRequest.Owner?.FullName ?? "",
+                CustomerId = boardingRequest.CustomerId,
+                CustomerName = boardingRequest.Customer?.FullName ?? "",
+                StartDate = boardingRequest.StartDate,
+                EndDate = boardingRequest.EndDate,
+                PricePerDay = boardingRequest.PricePerDay,
+                TotalAmount = boardingRequest.TotalAmount,
+                SpecialInstructions = boardingRequest.SpecialInstructions,
+                ContactPhone = boardingRequest.ContactPhone,
+                ContactAddress = boardingRequest.ContactAddress,
+                Status = boardingRequest.Status,
+                CreatedAt = boardingRequest.CreatedAt,
+                UpdatedAt = boardingRequest.UpdatedAt,
+                ChatRoomId = boardingRequest.ChatRoomId // Include chat room ID in the response
+            };
+
+            return Ok(ApiResponse<BoardingRequestDto>.SuccessResponse(response));
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, ApiResponse<BoardingRequestDto>.ErrorResponse($"Internal server error: {ex.Message}"));
+        }
+    }
+
+    [Authorize]
+    [HttpPost("payment")]
+    public async Task<ActionResult<ApiResponse<PaymentDto>>> CreateBoardingPayment([FromBody] BoardingPaymentRequestDto dto)
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            
+            var boardingRequest = await _unitOfWork.BoardingRequests.GetWithDetailsAsync(dto.BoardingRequestId);
+            
+            if (boardingRequest == null)
+                return NotFound(ApiResponse<PaymentDto>.ErrorResponse("Boarding request not found"));
+            
+            // Only pet owner can make payment
+            if (boardingRequest.OwnerId != userId)
+                return Forbid("Only the pet owner can make payment");
+            
+            if (boardingRequest.Status != "Confirmed")
+                return BadRequest(ApiResponse<PaymentDto>.ErrorResponse("Boarding request must be confirmed before payment"));
+
+            var payment = new PaymentTransaction
+            {
+                UserId = userId,
+                TransactionType = "BoardingPayment",
+                PaymentMethod = dto.PaymentMethod,
+                Amount = boardingRequest.TotalAmount,
+                Status = "Pending",
+                Description = $"Boarding payment for {boardingRequest.Pet?.Name}",
+                ReferenceId = dto.TransactionId,
+                Notes = dto.Notes,
+                BoardingRequestId = boardingRequest.Id,
+                PetId = boardingRequest.PetId
+            };
+
+            await _unitOfWork.PaymentTransactions.AddAsync(payment);
+            await _unitOfWork.SaveChangesAsync();
+
+            var response = new PaymentDto
+            {
+                Id = payment.Id,
+                SaleRequestId = 0, // Not applicable for boarding
+                PaymentMethod = payment.PaymentMethod,
+                TransactionId = payment.ReferenceId,
+                Status = payment.Status,
+                Notes = payment.Notes,
+                CreatedAt = payment.CreatedAt,
+                UpdatedAt = payment.CompletedAt
+            };
+
+            return Ok(ApiResponse<PaymentDto>.SuccessResponse(response));
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, ApiResponse<PaymentDto>.ErrorResponse($"Internal server error: {ex.Message}"));
+        }
+    }
+
+    [Authorize]
+    [HttpPost("payment-success")]
+    public async Task<ActionResult<ApiResponse<BoardingRequestDto>>> HandlePaymentSuccess([FromBody] BoardingPaymentSuccessDto dto)
+    {
+        try
+        {
+            var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
+            
+            var boardingRequest = await _unitOfWork.BoardingRequests.GetWithDetailsAsync(dto.BoardingRequestId);
+            
+            if (boardingRequest == null)
+                return NotFound(ApiResponse<BoardingRequestDto>.ErrorResponse("Boarding request not found"));
+            
+            // Only pet owner can confirm payment success
+            if (boardingRequest.OwnerId != userId)
+                return Forbid("Only the pet owner can confirm payment");
+            
+            if (boardingRequest.Status != "Confirmed")
+                return BadRequest(ApiResponse<BoardingRequestDto>.ErrorResponse("Boarding request must be confirmed before payment"));
+
+            // Auto-confirm the boarding request and start boarding
+            boardingRequest.Status = "InProgress";
+            boardingRequest.UpdatedAt = DateTime.UtcNow;
+            
+            // Hide pet during boarding
+            var pet = await _unitOfWork.Pets.GetByIdAsync(boardingRequest.PetId);
+            if (pet != null)
+            {
+                pet.IsHidden = true; // Hide pet during boarding
+                await _unitOfWork.Pets.UpdateAsync(pet);
+            }
+            
+            await _unitOfWork.BoardingRequests.UpdateAsync(boardingRequest);
+            await _unitOfWork.SaveChangesAsync();
+
+            // Create notification for the customer (person who will board the pet)
+            var notification = new Notification
+            {
+                UserId = boardingRequest.CustomerId,
+                Title = "Yêu cầu giữ dùm đã được xác nhận",
+                Body = $"Yêu cầu giữ dùm thú cưng {boardingRequest.Pet?.Name} đã được xác nhận và thanh toán thành công. Bạn có thể bắt đầu giữ dùm từ {boardingRequest.StartDate:dd/MM/yyyy}.",
+                IsRead = false,
+                CreatedAt = DateTime.UtcNow
+            };
+            
+            await _unitOfWork.Notifications.AddAsync(notification);
+            await _unitOfWork.SaveChangesAsync();
+
+            var response = new BoardingRequestDto
+            {
+                Id = boardingRequest.Id,
+                PetId = boardingRequest.PetId,
+                PetName = boardingRequest.Pet?.Name ?? "",
+                PetImageUrl = boardingRequest.Pet?.ImageUrl ?? "",
+                OwnerId = boardingRequest.OwnerId,
+                OwnerName = boardingRequest.Owner?.FullName ?? "",
+                CustomerId = boardingRequest.CustomerId,
+                CustomerName = boardingRequest.Customer?.FullName ?? "",
+                StartDate = boardingRequest.StartDate,
+                EndDate = boardingRequest.EndDate,
+                PricePerDay = boardingRequest.PricePerDay,
+                TotalAmount = boardingRequest.TotalAmount,
+                SpecialInstructions = boardingRequest.SpecialInstructions,
+                ContactPhone = boardingRequest.ContactPhone,
+                ContactAddress = boardingRequest.ContactAddress,
+                Status = boardingRequest.Status,
+                CreatedAt = boardingRequest.CreatedAt,
+                UpdatedAt = boardingRequest.UpdatedAt,
+                ChatRoomId = boardingRequest.ChatRoomId // Include chat room ID in the response
+            };
+
+            return Ok(ApiResponse<BoardingRequestDto>.SuccessResponse(response));
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, ApiResponse<BoardingRequestDto>.ErrorResponse($"Internal server error: {ex.Message}"));
+        }
+    }
+}

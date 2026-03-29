@@ -1,0 +1,260 @@
+using Microsoft.AspNetCore.Mvc;
+using PetCare.DTOs;
+using PetCare.Entities;
+using PetCare.Repositories;
+using Microsoft.EntityFrameworkCore;
+
+namespace PetCare.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class DemoController : ControllerBase
+{
+    private readonly IUnitOfWork _unitOfWork;
+    private readonly ILogger<DemoController> _logger;
+
+    public DemoController(IUnitOfWork unitOfWork, ILogger<DemoController> logger)
+    {
+        _unitOfWork = unitOfWork;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Test repository pattern with basic operations
+    /// </summary>
+    [HttpGet("test")]
+    public async Task<ActionResult<ApiResponse<object>>> TestRepository()
+    {
+        try
+        {
+            _logger.LogInformation("Starting repository pattern test");
+
+            // 1. Create a new user
+            var user = new User
+            {
+                FullName = "Test User",
+                Email = $"test_{DateTime.Now.Ticks}@example.com",
+                PasswordHash = BCrypt.Net.BCrypt.HashPassword("Password123!"),
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _logger.LogInformation("Creating test user");
+            var createdUser = await _unitOfWork.Users.AddAsync(user);
+            _logger.LogInformation("Created user with ID: {UserId}", createdUser.Id);
+
+            // Add user to the default User role
+            var userRole = await _unitOfWork.Roles.FindAsync(r => r.Name == "User");
+            if (userRole.Any())
+            {
+                await _unitOfWork.UserRoles.AddAsync(new UserRole
+                {
+                    UserId = createdUser.Id,
+                    RoleId = userRole.First().Id,
+                    AssignedAt = DateTime.UtcNow
+                });
+                _logger.LogInformation("Added user to 'User' role");
+            }
+
+            // 2. Create a pet for the user
+            var pet = new Pet
+            {
+                Name = "Test Pet",
+                Species = "Dog",
+                Breed = "Mixed",
+                Gender = "Male",
+                AgeMonths = 12,
+                Description = "Test pet created via repository pattern",
+                OwnerId = createdUser.Id,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _logger.LogInformation("Creating test pet for user {UserId}", createdUser.Id);
+            var createdPet = await _unitOfWork.Pets.AddAsync(pet);
+            _logger.LogInformation("Created pet with ID: {PetId}", createdPet.Id);
+
+            // 3. Create a pet profile
+            var petProfile = new PetProfile
+            {
+                PetId = createdPet.Id,
+                Personality = "Friendly",
+                FavoriteFood = "Dog treats",
+                Hobbies = "Playing fetch",
+                Story = "Test pet story"
+            };
+
+            _logger.LogInformation("Creating pet profile for pet {PetId}", createdPet.Id);
+            await _unitOfWork.PetProfiles.AddAsync(petProfile);
+
+            // 4. Create vaccination schedule
+            var vaccination = new VaccinationSchedule
+            {
+                PetId = createdPet.Id,
+                VaccineName = "Rabies",
+                ScheduledDate = DateTime.UtcNow.AddDays(30),
+                IsCompleted = false,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _logger.LogInformation("Creating vaccination schedule for pet {PetId}", createdPet.Id);
+            await _unitOfWork.VaccinationSchedules.AddAsync(vaccination);
+
+            // 5. Use transaction for multiple operations
+            await _unitOfWork.BeginTransactionAsync();
+            try
+            {
+                // Create another pet in a transaction
+                var pet2 = new Pet
+                {
+                    Name = "Transaction Pet",
+                    Species = "Cat",
+                    Breed = "Tabby",
+                    Gender = "Female",
+                    AgeMonths = 6,
+                    Description = "Pet created within a transaction",
+                    OwnerId = createdUser.Id,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _logger.LogInformation("Creating second pet in transaction");
+                var createdPet2 = await _unitOfWork.Pets.AddAsync(pet2);
+                
+                // Create a preference for the user
+                var preference = new Preference
+                {
+                    UserId = createdUser.Id,
+                    PreferredSpecies = "Cat",
+                    PreferredGender = "Female",
+                    MinAgeMonths = 3,
+                    MaxAgeMonths = 48,
+                    MaxDistanceKm = 50,
+                    UpdatedAt = DateTime.UtcNow
+                };
+
+                _logger.LogInformation("Creating preference for user");
+                await _unitOfWork.Preferences.AddAsync(preference);
+
+                // Commit the transaction
+                _logger.LogInformation("Committing transaction");
+                await _unitOfWork.CommitAsync();
+                _logger.LogInformation("Transaction committed successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error during transaction, rolling back");
+                await _unitOfWork.RollbackAsync();
+                throw;
+            }
+
+            // 6. Get the user with pets to verify relationships
+            var userWithPets = await _unitOfWork.Users.GetByIdWithPetsAsync(createdUser.Id);
+            _logger.LogInformation("Retrieved user with {PetCount} pets", userWithPets?.Pets.Count);
+
+            // 7. Get pet with full details
+            var petWithDetails = await _unitOfWork.Pets.GetByIdWithFullDetailsAsync(createdPet.Id);
+            _logger.LogInformation("Retrieved pet with profile: {HasProfile}", petWithDetails?.Profile != null);
+
+            // 8. Get user roles
+            var userRoles = await _unitOfWork.Users.GetUserRolesAsync(createdUser.Id);
+            _logger.LogInformation("Retrieved user roles: {RolesCount}", userRoles.Count());
+
+            var result = new
+            {
+                User = userWithPets,
+                PetsCount = userWithPets?.Pets.Count,
+                UserRoles = userRoles,
+                FirstPet = petWithDetails,
+                HasProfile = petWithDetails?.Profile != null,
+                HasVaccinations = petWithDetails?.VaccinationSchedules?.Any() == true
+            };
+
+            _logger.LogInformation("Test completed successfully");
+            return Ok(ApiResponse<object>.SuccessResponse(result, "Repository pattern test completed successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during repository pattern test");
+            return StatusCode(500, ApiResponse<object>.ErrorResponse($"Repository test failed: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
+    /// Clean up test data
+    /// </summary>
+    [HttpDelete("cleanup")]
+    public async Task<ActionResult<ApiResponse<object>>> CleanupTestData()
+    {
+        try
+        {
+            _logger.LogInformation("Starting cleanup of test data");
+            
+            // Find test users (containing 'test' in email)
+            var testUsers = await _unitOfWork.Users.FindAsync(u => u.Email.Contains("test_"));
+            
+            int userCount = 0;
+            int petCount = 0;
+            int roleAssignmentCount = 0;
+            
+            foreach (var user in testUsers)
+            {
+                // Get user's pets
+                var pets = await _unitOfWork.Pets.FindAsync(p => p.OwnerId == user.Id);
+                
+                foreach (var pet in pets)
+                {
+                    // Delete pet's associated records
+                    var profile = await _unitOfWork.PetProfiles.FindAsync(pp => pp.PetId == pet.Id);
+                    foreach (var pp in profile)
+                    {
+                        await _unitOfWork.PetProfiles.DeleteAsync(pp);
+                    }
+                    
+                    var vaccinations = await _unitOfWork.VaccinationSchedules.FindAsync(v => v.PetId == pet.Id);
+                    foreach (var v in vaccinations)
+                    {
+                        await _unitOfWork.VaccinationSchedules.DeleteAsync(v);
+                    }
+                    
+                    // Delete the pet
+                    await _unitOfWork.Pets.DeleteAsync(pet);
+                    petCount++;
+                }
+                
+                // Delete user preferences
+                var preferences = await _unitOfWork.Preferences.FindAsync(p => p.UserId == user.Id);
+                foreach (var pref in preferences)
+                {
+                    await _unitOfWork.Preferences.DeleteAsync(pref);
+                }
+                
+                // Delete user roles
+                var userRoles = await _unitOfWork.UserRoles.FindAsync(ur => ur.UserId == user.Id);
+                foreach (var userRole in userRoles)
+                {
+                    await _unitOfWork.UserRoles.DeleteAsync(userRole);
+                    roleAssignmentCount++;
+                }
+                
+                // Delete the user
+                await _unitOfWork.Users.DeleteAsync(user);
+                userCount++;
+            }
+            
+            var result = new 
+            { 
+                UsersRemoved = userCount, 
+                PetsRemoved = petCount,
+                RoleAssignmentsRemoved = roleAssignmentCount
+            };
+            
+            _logger.LogInformation("Cleanup completed. Removed {UserCount} users, {PetCount} pets, and {RoleCount} role assignments", 
+                userCount, petCount, roleAssignmentCount);
+            
+            return Ok(ApiResponse<object>.SuccessResponse(result, "Test data cleanup completed successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error during test data cleanup");
+            return StatusCode(500, ApiResponse<object>.ErrorResponse($"Cleanup failed: {ex.Message}"));
+        }
+    }
+}

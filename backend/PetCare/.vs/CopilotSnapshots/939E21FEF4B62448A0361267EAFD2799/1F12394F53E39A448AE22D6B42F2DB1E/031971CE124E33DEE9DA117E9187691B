@@ -1,0 +1,11 @@
+﻿using PetCare.Entities;
+
+namespace PetCare.Repositories;
+
+public interface IUserRepository : IRepository<User>
+{
+    Task<User?> GetByEmailAsync(string email);
+    Task<User?> GetByIdWithPetsAsync(int id);
+    Task<IEnumerable<User>> GetAllWithPetsAsync();
+    Task<bool> IsEmailUniqueAsync(string email);
+}

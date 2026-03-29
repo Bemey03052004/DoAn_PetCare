@@ -1,0 +1,26 @@
+﻿namespace PetCare.Repositories;
+
+/// <summary>
+/// Interface for the Unit of Work pattern to coordinate multiple repository operations within a single transaction
+/// </summary>
+public interface IUnitOfWork : IDisposable
+{
+    // Individual repositories
+    IUserRepository Users { get; }
+    IPetRepository Pets { get; }
+    IRepository<PetProfile> PetProfiles { get; }
+    IRepository<VaccinationSchedule> VaccinationSchedules { get; }
+    IRepository<AdoptionRequest> AdoptionRequests { get; }
+    IRepository<ChatRoom> ChatRooms { get; }
+    IRepository<Message> Messages { get; }
+    IRepository<Notification> Notifications { get; }
+    IRepository<Preference> Preferences { get; }
+    
+    // Transaction management
+    Task BeginTransactionAsync();
+    Task CommitAsync();
+    Task RollbackAsync();
+    
+    // Save changes
+    Task<int> SaveChangesAsync();
+}

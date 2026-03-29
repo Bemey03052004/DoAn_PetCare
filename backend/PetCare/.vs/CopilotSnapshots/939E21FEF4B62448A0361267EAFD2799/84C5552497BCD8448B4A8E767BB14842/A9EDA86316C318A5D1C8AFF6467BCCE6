@@ -1,0 +1,130 @@
+﻿using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using PetCare.Data;
+using PetCare.DTOs;
+using PetCare.Entities;
+
+namespace PetCare.Services;
+
+public interface IAuthService
+{
+    Task<UserResponseDto> RegisterUserAsync(UserRegistrationDto registrationDto);
+    Task<AuthResponseDto> LoginAsync(LoginDto loginDto);
+}
+
+public class AuthService : IAuthService
+{
+    private readonly AppDbContext _db;
+    private readonly IConfiguration _configuration;
+
+    public AuthService(AppDbContext db, IConfiguration configuration)
+    {
+        _db = db;
+        _configuration = configuration;
+    }
+
+    public async Task<UserResponseDto> RegisterUserAsync(UserRegistrationDto dto)
+    {
+        // Check if email is already in use
+        if (await _db.Users.AnyAsync(u => u.Email == dto.Email))
+        {
+            throw new InvalidOperationException("Email already in use");
+        }
+
+        // Create new user
+        var user = new User
+        {
+            FullName = dto.FullName,
+            Email = dto.Email,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(dto.Password),
+            Phone = dto.Phone,
+            Address = dto.Address,
+            Latitude = dto.Latitude,
+            Longitude = dto.Longitude,
+            Role = "User",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _db.Users.Add(user);
+        await _db.SaveChangesAsync();
+
+        // Return user data (without password)
+        return MapUserToDto(user);
+    }
+
+    public async Task<AuthResponseDto> LoginAsync(LoginDto loginDto)
+    {
+        // Find user by email
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.Email == loginDto.Email);
+        
+        // Check if user exists
+        if (user == null)
+        {
+            throw new InvalidOperationException("Invalid email or password");
+        }
+
+        // Verify password
+        if (!BCrypt.Net.BCrypt.Verify(loginDto.Password, user.PasswordHash))
+        {
+            throw new InvalidOperationException("Invalid email or password");
+        }
+
+        // Generate JWT token
+        var token = GenerateJwtToken(user);
+
+        // Return auth response with user data and token
+        return new AuthResponseDto
+        {
+            User = MapUserToDto(user),
+            Token = token.token,
+            Expiration = token.expiration
+        };
+    }
+
+    private UserResponseDto MapUserToDto(User user)
+    {
+        return new UserResponseDto
+        {
+            Id = user.Id,
+            FullName = user.FullName,
+            Email = user.Email,
+            Phone = user.Phone,
+            Address = user.Address,
+            Latitude = user.Latitude,
+            Longitude = user.Longitude,
+            Role = user.Role,
+            CreatedAt = user.CreatedAt
+        };
+    }
+
+    private (string token, DateTime expiration) GenerateJwtToken(User user)
+    {
+        var jwtSettings = _configuration.GetSection("Jwt");
+        var key = Encoding.ASCII.GetBytes(jwtSettings["Key"]!);
+        var expirationMinutes = Convert.ToInt32(jwtSettings["ExpiresMinutes"] ?? "120");
+        var expiration = DateTime.UtcNow.AddMinutes(expirationMinutes);
+
+        var tokenDescriptor = new SecurityTokenDescriptor
+        {
+            Subject = new ClaimsIdentity(new[]
+            {
+                new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+                new Claim(ClaimTypes.Email, user.Email),
+                new Claim(ClaimTypes.Name, user.FullName),
+                new Claim(ClaimTypes.Role, user.Role)
+            }),
+            Expires = expiration,
+            SigningCredentials = new SigningCredentials(new SymmetricSecurityKey(key), SecurityAlgorithms.HmacSha256Signature),
+            Issuer = jwtSettings["Issuer"],
+            Audience = jwtSettings["Audience"]
+        };
+
+        var tokenHandler = new JwtSecurityTokenHandler();
+        var token = tokenHandler.CreateToken(tokenDescriptor);
+
+        return (tokenHandler.WriteToken(token), expiration);
+    }
+}

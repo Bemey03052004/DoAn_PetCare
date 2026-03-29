@@ -1,0 +1,93 @@
+﻿using Microsoft.AspNetCore.Mvc;
+using PetCare.DTOs;
+using PetCare.Entities;
+using PetCare.Repositories;
+
+namespace PetCare.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class UsersController : ControllerBase
+{
+    private readonly IUnitOfWork _unitOfWork;
+
+    public UsersController(IUnitOfWork unitOfWork)
+    {
+        _unitOfWork = unitOfWork;
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<ApiResponse<IEnumerable<User>>>> GetAll()
+    {
+        var users = await _unitOfWork.Users.GetAllWithPetsAsync();
+        return Ok(ApiResponse<IEnumerable<User>>.SuccessResponse(users));
+    }
+
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<ApiResponse<User>>> GetById(int id)
+    {
+        var user = await _unitOfWork.Users.GetByIdWithPetsAsync(id);
+        return user is null 
+            ? NotFound(ApiResponse<User>.ErrorResponse("User not found")) 
+            : Ok(ApiResponse<User>.SuccessResponse(user));
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<ApiResponse<User>>> Create([FromBody] User user)
+    {
+        // Check if email is already in use
+        if (!await _unitOfWork.Users.IsEmailUniqueAsync(user.Email))
+        {
+            return Conflict(ApiResponse<User>.ErrorResponse("Email already in use"));
+        }
+
+        var createdUser = await _unitOfWork.Users.AddAsync(user);
+        return CreatedAtAction(nameof(GetById), new { id = createdUser.Id }, 
+            ApiResponse<User>.SuccessResponse(createdUser));
+    }
+
+    [HttpPut("{id:int}")]
+    public async Task<ActionResult<ApiResponse<User>>> Update(int id, [FromBody] User user)
+    {
+        var existing = await _unitOfWork.Users.GetByIdAsync(id);
+        if (existing is null) 
+        {
+            return NotFound(ApiResponse<User>.ErrorResponse("User not found"));
+        }
+
+        // Check if email is unique if it's changed
+        if (existing.Email != user.Email && !await _unitOfWork.Users.IsEmailUniqueAsync(user.Email))
+        {
+            return Conflict(ApiResponse<User>.ErrorResponse("Email already in use"));
+        }
+
+        existing.FullName = user.FullName;
+        existing.Email = user.Email;
+        existing.Phone = user.Phone;
+        existing.Address = user.Address;
+        existing.Latitude = user.Latitude;
+        existing.Longitude = user.Longitude;
+        
+        // Don't overwrite password hash unless it's provided
+        if (!string.IsNullOrEmpty(user.PasswordHash))
+        {
+            existing.PasswordHash = user.PasswordHash;
+        }
+
+        await _unitOfWork.Users.UpdateAsync(existing);
+        return Ok(ApiResponse<User>.SuccessResponse(existing));
+    }
+
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var existing = await _unitOfWork.Users.GetByIdAsync(id);
+        if (existing is null) 
+        {
+            return NotFound(ApiResponse<User>.ErrorResponse("User not found"));
+        }
+
+        await _unitOfWork.Users.DeleteAsync(existing);
+        return NoContent();
+    }
+}

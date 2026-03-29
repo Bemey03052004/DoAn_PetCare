@@ -1,0 +1,140 @@
+﻿using Microsoft.EntityFrameworkCore;
+
+using PetCare.Entities;
+
+namespace PetCare.Data;
+
+public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
+{
+    // ===== DbSet cho toàn bộ Entity =====
+    public DbSet<User> Users => Set<User>();
+    public DbSet<Role> Roles => Set<Role>();
+    public DbSet<UserRole> UserRoles => Set<UserRole>();
+    public DbSet<Pet> Pets => Set<Pet>();
+    public DbSet<PetProfile> PetProfiles => Set<PetProfile>();
+    public DbSet<VaccinationSchedule> VaccinationSchedules => Set<VaccinationSchedule>();
+    public DbSet<AdoptionRequest> AdoptionRequests => Set<AdoptionRequest>();
+    public DbSet<ChatRoom> ChatRooms => Set<ChatRoom>();
+    public DbSet<Message> Messages => Set<Message>();
+    public DbSet<Notification> Notifications => Set<Notification>();
+    public DbSet<Preference> Preferences => Set<Preference>();
+
+    // ⚙️ Cấu hình Fluent API
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        base.OnModelCreating(b);
+
+        // ----- User -----
+        b.Entity<User>()
+            .HasIndex(u => u.Email)
+            .IsUnique();
+
+        b.Entity<User>()
+            .HasMany(u => u.Pets)
+            .WithOne(p => p.Owner)
+            .HasForeignKey(p => p.OwnerId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // ----- User-Role Many-to-Many Relationship -----
+        b.Entity<UserRole>()
+            .HasKey(ur => ur.Id);
+
+        b.Entity<UserRole>()
+            .HasOne(ur => ur.User)
+            .WithMany(u => u.UserRoles)
+            .HasForeignKey(ur => ur.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        b.Entity<UserRole>()
+            .HasOne(ur => ur.Role)
+            .WithMany(r => r.UserRoles)
+            .HasForeignKey(ur => ur.RoleId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Create a unique constraint on UserId and RoleId to prevent duplicate assignments
+        b.Entity<UserRole>()
+            .HasIndex(ur => new { ur.UserId, ur.RoleId })
+            .IsUnique();
+
+        // ----- Pet -----
+        b.Entity<Pet>()
+            .HasOne(p => p.Profile)
+            .WithOne(pp => pp.Pet)
+            .HasForeignKey<PetProfile>(pp => pp.PetId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        b.Entity<Pet>()
+            .HasMany(p => p.VaccinationSchedules)
+            .WithOne(v => v.Pet)
+            .HasForeignKey(v => v.PetId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        b.Entity<Pet>()
+            .HasMany(p => p.AdoptionRequests)
+            .WithOne(a => a.Pet)
+            .HasForeignKey(a => a.PetId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // ----- PetProfile -----
+        b.Entity<PetProfile>()
+            .HasIndex(pp => pp.PetId)
+            .IsUnique();
+
+        // ----- VaccinationSchedule -----
+        b.Entity<VaccinationSchedule>()
+            .HasIndex(v => v.ScheduledDate);
+
+        // ----- AdoptionRequest -----
+        b.Entity<AdoptionRequest>()
+            .HasOne(a => a.User)
+            .WithMany(u => u.AdoptionRequests)
+            .HasForeignKey(a => a.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // ----- ChatRoom -----
+        b.Entity<ChatRoom>()
+            .HasOne(c => c.User1)
+            .WithMany()
+            .HasForeignKey(c => c.User1Id)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        b.Entity<ChatRoom>()
+            .HasOne(c => c.User2)
+            .WithMany()
+            .HasForeignKey(c => c.User2Id)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // ----- Message -----
+        b.Entity<Message>()
+            .HasOne(m => m.ChatRoom)
+            .WithMany(c => c.Messages)
+            .HasForeignKey(m => m.ChatRoomId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        b.Entity<Message>()
+            .HasOne(m => m.Sender)
+            .WithMany(u => u.Messages)
+            .HasForeignKey(m => m.SenderId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // ----- Notification -----
+        b.Entity<Notification>()
+            .HasOne(n => n.User)
+            .WithMany(u => u.Notifications)
+            .HasForeignKey(n => n.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // ----- Preference -----
+        b.Entity<Preference>()
+            .HasOne(p => p.User)
+            .WithMany()
+            .HasForeignKey(p => p.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // ----- Default Roles -----
+        b.Entity<Role>().HasData(
+            new Role { Id = 1, Name = "User", Description = "Standard user with basic access" },
+            new Role { Id = 2, Name = "Admin", Description = "Administrator with full access" }
+        );
+    }
+}

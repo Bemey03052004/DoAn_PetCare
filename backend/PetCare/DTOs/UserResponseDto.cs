@@ -1,0 +1,15 @@
+namespace PetCare.DTOs;
+
+public class UserResponseDto
+{
+    public int Id { get; set; }
+    public string FullName { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string? Phone { get; set; }
+    public string? Address { get; set; }
+    public double? Latitude { get; set; }
+    public double? Longitude { get; set; }
+    public bool IsEmailVerified { get; set; }
+    public List<string> Roles { get; set; } = new List<string>();
+    public DateTime CreatedAt { get; set; }
+}

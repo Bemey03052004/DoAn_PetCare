@@ -1,0 +1,57 @@
+﻿using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
+
+namespace PetCare.Entities;
+
+public class User
+{
+    [Key]
+    public int Id { get; set; }
+
+    [Required, MaxLength(100)]
+    public string FullName { get; set; } = "";
+
+    [Required, MaxLength(100)]
+    public string Email { get; set; } = "";
+
+    [Required, MaxLength(255)]
+    public string PasswordHash { get; set; } = "";
+
+    [MaxLength(20)]
+    public string? Phone { get; set; }
+    
+    [MaxLength(20)]
+    public string? PhoneNumber { get; set; }
+
+    [MaxLength(255)]
+    public string? Address { get; set; }
+
+    public double? Latitude { get; set; }   // Định vị
+    public double? Longitude { get; set; }
+
+    public bool IsEmailVerified { get; set; } = false;
+    public bool IsActive { get; set; } = true;
+
+    // Removing single role property
+    // [MaxLength(50)]
+    // public string Role { get; set; } = "User"; // User / Admin
+
+    // Many-to-many relationship with roles
+    [JsonIgnore]
+    public ICollection<UserRole> UserRoles { get; set; } = new List<UserRole>();
+
+    [JsonIgnore]
+    public ICollection<Pet> Pets { get; set; } = new List<Pet>();
+
+    [JsonIgnore]
+    public ICollection<AdoptionRequest> AdoptionRequests { get; set; } = new List<AdoptionRequest>();
+
+    [JsonIgnore]
+    public ICollection<Message> Messages { get; set; } = new List<Message>();
+
+    [JsonIgnore]
+    public ICollection<Notification> Notifications { get; set; } = new List<Notification>();
+
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? UpdatedAt { get; set; }
+}

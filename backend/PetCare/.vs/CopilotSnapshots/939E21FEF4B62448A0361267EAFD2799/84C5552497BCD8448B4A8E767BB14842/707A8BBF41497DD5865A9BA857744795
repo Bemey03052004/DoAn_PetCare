@@ -1,0 +1,110 @@
+﻿using Microsoft.AspNetCore.Mvc;
+using PetCare.DTOs;
+using PetCare.Entities;
+using PetCare.Repositories;
+
+namespace PetCare.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class PetsController : ControllerBase
+{
+    private readonly IUnitOfWork _unitOfWork;
+
+    public PetsController(IUnitOfWork unitOfWork)
+    {
+        _unitOfWork = unitOfWork;
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<ApiResponse<IEnumerable<Pet>>>> GetAll()
+    {
+        var pets = await _unitOfWork.Pets.GetAllAsync();
+        return Ok(ApiResponse<IEnumerable<Pet>>.SuccessResponse(pets));
+    }
+
+    [HttpGet("available")]
+    public async Task<ActionResult<ApiResponse<IEnumerable<Pet>>>> GetAvailable()
+    {
+        var pets = await _unitOfWork.Pets.GetAvailableForAdoptionAsync();
+        return Ok(ApiResponse<IEnumerable<Pet>>.SuccessResponse(pets));
+    }
+
+    [HttpGet("{id:int}")]
+    public async Task<ActionResult<ApiResponse<Pet>>> GetById(int id)
+    {
+        var pet = await _unitOfWork.Pets.GetByIdWithFullDetailsAsync(id);
+        return pet is null 
+            ? NotFound(ApiResponse<Pet>.ErrorResponse("Pet not found")) 
+            : Ok(ApiResponse<Pet>.SuccessResponse(pet));
+    }
+
+    [HttpGet("owner/{ownerId:int}")]
+    public async Task<ActionResult<ApiResponse<IEnumerable<Pet>>>> GetByOwnerId(int ownerId)
+    {
+        // Check if owner exists
+        if (await _unitOfWork.Users.GetByIdAsync(ownerId) == null)
+        {
+            return NotFound(ApiResponse<IEnumerable<Pet>>.ErrorResponse("Owner not found"));
+        }
+
+        var pets = await _unitOfWork.Pets.GetByOwnerIdAsync(ownerId);
+        return Ok(ApiResponse<IEnumerable<Pet>>.SuccessResponse(pets));
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<ApiResponse<Pet>>> Create([FromBody] Pet pet)
+    {
+        // Check if owner exists
+        if (await _unitOfWork.Users.GetByIdAsync(pet.OwnerId) == null)
+        {
+            return BadRequest(ApiResponse<Pet>.ErrorResponse($"Owner with ID {pet.OwnerId} does not exist"));
+        }
+
+        var createdPet = await _unitOfWork.Pets.AddAsync(pet);
+        return CreatedAtAction(nameof(GetById), new { id = createdPet.Id }, 
+            ApiResponse<Pet>.SuccessResponse(createdPet));
+    }
+
+    [HttpPut("{id:int}")]
+    public async Task<ActionResult<ApiResponse<Pet>>> Update(int id, [FromBody] Pet pet)
+    {
+        var existing = await _unitOfWork.Pets.GetByIdAsync(id);
+        if (existing is null) 
+        {
+            return NotFound(ApiResponse<Pet>.ErrorResponse("Pet not found"));
+        }
+
+        // Check if owner exists if owner is being changed
+        if (existing.OwnerId != pet.OwnerId && await _unitOfWork.Users.GetByIdAsync(pet.OwnerId) == null)
+        {
+            return BadRequest(ApiResponse<Pet>.ErrorResponse($"Owner with ID {pet.OwnerId} does not exist"));
+        }
+
+        existing.Name = pet.Name;
+        existing.Species = pet.Species;
+        existing.Breed = pet.Breed;
+        existing.Gender = pet.Gender;
+        existing.AgeMonths = pet.AgeMonths;
+        existing.ImageUrl = pet.ImageUrl;
+        existing.Description = pet.Description;
+        existing.IsAdopted = pet.IsAdopted;
+        existing.OwnerId = pet.OwnerId;
+
+        await _unitOfWork.Pets.UpdateAsync(existing);
+        return Ok(ApiResponse<Pet>.SuccessResponse(existing));
+    }
+
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var existing = await _unitOfWork.Pets.GetByIdAsync(id);
+        if (existing is null) 
+        {
+            return NotFound(ApiResponse<Pet>.ErrorResponse("Pet not found"));
+        }
+
+        await _unitOfWork.Pets.DeleteAsync(existing);
+        return NoContent();
+    }
+}

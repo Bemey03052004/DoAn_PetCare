@@ -1,0 +1,36 @@
+﻿using Microsoft.EntityFrameworkCore;
+using PetCare.Data;
+using PetCare.Entities;
+
+namespace PetCare.Repositories;
+
+public class UserRepository : Repository<User>, IUserRepository
+{
+    public UserRepository(AppDbContext context) : base(context)
+    {
+    }
+
+    public async Task<User?> GetByEmailAsync(string email)
+    {
+        return await _dbSet.FirstOrDefaultAsync(u => u.Email == email);
+    }
+
+    public async Task<User?> GetByIdWithPetsAsync(int id)
+    {
+        return await _dbSet
+            .Include(u => u.Pets)
+            .FirstOrDefaultAsync(u => u.Id == id);
+    }
+
+    public async Task<IEnumerable<User>> GetAllWithPetsAsync()
+    {
+        return await _dbSet
+            .Include(u => u.Pets)
+            .ToListAsync();
+    }
+
+    public async Task<bool> IsEmailUniqueAsync(string email)
+    {
+        return !await _dbSet.AnyAsync(u => u.Email == email);
+    }
+}

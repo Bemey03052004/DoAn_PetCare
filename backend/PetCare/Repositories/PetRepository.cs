@@ -1,0 +1,187 @@
+using Microsoft.EntityFrameworkCore;
+using PetCare.Data;
+using PetCare.Entities;
+
+namespace PetCare.Repositories;
+
+public class PetRepository : Repository<Pet>, IPetRepository
+{
+    public PetRepository(AppDbContext context) : base(context)
+    {
+    }
+
+    public async Task<Pet?> GetByIdWithProfileAsync(int id)
+    {
+        return await _dbSet
+            .Include(p => p.Profile)
+            .FirstOrDefaultAsync(p => p.Id == id);
+    }
+
+    public async Task<Pet?> GetByIdWithOwnerAsync(int id)
+    {
+        return await _dbSet
+            .Include(p => p.Owner)
+            .FirstOrDefaultAsync(p => p.Id == id);
+    }
+
+    public async Task<Pet?> GetByIdWithFullDetailsAsync(int id)
+    {
+        return await _dbSet
+            .Include(p => p.Owner)
+            .Include(p => p.Profile)
+            .Include(p => p.VaccinationSchedules)
+            .Include(p => p.AdoptionRequests)
+            .ThenInclude(a => a.User)
+            .FirstOrDefaultAsync(p => p.Id == id);
+    }
+
+    public async Task<IEnumerable<Pet>> GetByOwnerIdAsync(int ownerId)
+    {
+        return await _dbSet
+            .Where(p => p.OwnerId == ownerId)
+            .Include(p => p.Profile)
+            .ToListAsync();
+    }
+
+    public async Task<IEnumerable<Pet>> GetAvailableForAdoptionAsync()
+    {
+        return await _dbSet
+            .Where(p => !p.IsAdopted)
+            .Include(p => p.Profile)
+            .Include(p => p.Owner)
+            .ToListAsync();
+    }
+
+    public async Task<IEnumerable<Pet>> GetPetsByPreferenceAsync(Preference preference, double? maxDistance = null)
+    {
+        var query = _dbSet
+            .Where(p => !p.IsAdopted)
+            .Include(p => p.Profile)
+            .Include(p => p.Owner)
+            .AsQueryable();
+
+        // Filter by species if specified
+        if (!string.IsNullOrEmpty(preference.PreferredSpecies))
+        {
+            query = query.Where(p => p.Species == preference.PreferredSpecies);
+        }
+
+        // Filter by gender if specified
+        if (!string.IsNullOrEmpty(preference.PreferredGender))
+        {
+            query = query.Where(p => p.Gender == preference.PreferredGender);
+        }
+
+        // Filter by age range if specified
+        if (preference.MinAgeMonths.HasValue)
+        {
+            query = query.Where(p => p.AgeMonths >= preference.MinAgeMonths.Value);
+        }
+
+        if (preference.MaxAgeMonths.HasValue)
+        {
+            query = query.Where(p => p.AgeMonths <= preference.MaxAgeMonths.Value);
+        }
+
+        // Filter by distance if specified and location data is available
+        if (maxDistance.HasValue && preference.User.Latitude.HasValue && preference.User.Longitude.HasValue)
+        {
+            var userLat = preference.User.Latitude.Value;
+            var userLon = preference.User.Longitude.Value;
+
+            // Note: This is a simplified distance calculation and may not be accurate for large distances
+            // In a production app, you might want to use a more sophisticated approach using a spatial database
+            query = query.Where(p => 
+                p.Owner != null && 
+                p.Owner.Latitude.HasValue && 
+                p.Owner.Longitude.HasValue &&
+                CalculateDistance(
+                    userLat, userLon,
+                    p.Owner.Latitude.Value, p.Owner.Longitude.Value) <= maxDistance.Value);
+        }
+
+        return await query.ToListAsync();
+    }
+
+    public async Task<IEnumerable<Pet>> GetPublicPetsAsync(
+        string? species = null,
+        int? minAgeMonths = null,
+        int? maxAgeMonths = null,
+        string? keyword = null,
+        double? lat = null,
+        double? lng = null,
+        double? maxDistanceKm = null)
+    {
+        var query = _dbSet
+            .Where(p => p.IsPublic && !p.IsAdopted)
+            .Include(p => p.Profile)
+            .Include(p => p.Owner)
+            .AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(species))
+        {
+            query = query.Where(p => p.Species == species);
+        }
+
+        if (minAgeMonths.HasValue)
+        {
+            query = query.Where(p => p.AgeMonths >= minAgeMonths.Value);
+        }
+
+        if (maxAgeMonths.HasValue)
+        {
+            query = query.Where(p => p.AgeMonths <= maxAgeMonths.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            keyword = keyword.Trim();
+            query = query.Where(p =>
+                (p.Name != null && p.Name.Contains(keyword)) ||
+                (p.Breed != null && p.Breed.Contains(keyword)) ||
+                (p.Description != null && p.Description.Contains(keyword))
+            );
+        }
+
+        if (lat.HasValue && lng.HasValue && maxDistanceKm.HasValue)
+        {
+            var userLat = lat.Value;
+            var userLng = lng.Value;
+            query = query.Where(p =>
+                p.Owner != null &&
+                p.Owner.Latitude.HasValue && p.Owner.Longitude.HasValue &&
+                CalculateDistance(userLat, userLng, p.Owner.Latitude!.Value, p.Owner.Longitude!.Value) <= maxDistanceKm.Value);
+        }
+
+        return await query.ToListAsync();
+    }
+
+    // Haversine formula for calculating distance between two coordinates in kilometers
+    private double CalculateDistance(double lat1, double lon1, double lat2, double lon2)
+    {
+        const double R = 6371; // Earth radius in kilometers
+        var dLat = ToRadians(lat2 - lat1);
+        var dLon = ToRadians(lon2 - lon1);
+        
+        var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                Math.Cos(ToRadians(lat1)) * Math.Cos(ToRadians(lat2)) *
+                Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+        
+        var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+        return R * c;
+    }
+
+    private double ToRadians(double degrees)
+    {
+        return degrees * Math.PI / 180;
+    }
+
+    public async Task<IEnumerable<Pet>> GetRecentAsync(int count)
+    {
+        return await _dbSet
+            .OrderByDescending(p => p.CreatedAt)
+            .Take(count)
+            .Include(p => p.Owner)
+            .ToListAsync();
+    }
+}

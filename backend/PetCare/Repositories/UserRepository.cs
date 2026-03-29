@@ -1,0 +1,155 @@
+using Microsoft.EntityFrameworkCore;
+using PetCare.Data;
+using PetCare.Entities;
+
+namespace PetCare.Repositories;
+
+public class UserRepository : Repository<User>, IUserRepository
+{
+    public UserRepository(AppDbContext context) : base(context)
+    {
+    }
+
+    public async Task<User?> GetByEmailAsync(string email)
+    {
+        return await _dbSet.FirstOrDefaultAsync(u => u.Email == email);
+    }
+
+    public async Task<User?> GetByIdWithPetsAsync(int id)
+    {
+        return await _dbSet
+            .Include(u => u.Pets)
+            .FirstOrDefaultAsync(u => u.Id == id);
+    }
+
+    public async Task<User?> GetByIdWithRolesAsync(int id)
+    {
+        return await _dbSet
+            .Include(u => u.UserRoles)
+            .ThenInclude(ur => ur.Role)
+            .FirstOrDefaultAsync(u => u.Id == id);
+    }
+
+    public async Task<User?> GetByIdWithFullDetailsAsync(int id)
+    {
+        return await _dbSet
+            .Include(u => u.UserRoles)
+            .ThenInclude(ur => ur.Role)
+            .Include(u => u.Pets)
+            .Include(u => u.AdoptionRequests)
+            .FirstOrDefaultAsync(u => u.Id == id);
+    }
+
+    public async Task<IEnumerable<User>> GetAllWithPetsAsync()
+    {
+        return await _dbSet
+            .Include(u => u.Pets)
+            .ToListAsync();
+    }
+
+    public async Task<IEnumerable<User>> GetAllWithRolesAsync()
+    {
+        return await _dbSet
+            .Include(u => u.UserRoles)
+            .ThenInclude(ur => ur.Role)
+            .ToListAsync();
+    }
+
+    public async Task<bool> IsEmailUniqueAsync(string email)
+    {
+        return !await _dbSet.AnyAsync(u => u.Email == email);
+    }
+
+    public async Task<IEnumerable<string>> GetUserRolesAsync(int userId)
+    {
+        var user = await _dbSet
+            .Include(u => u.UserRoles)
+            .ThenInclude(ur => ur.Role)
+            .FirstOrDefaultAsync(u => u.Id == userId);
+
+        if (user == null)
+        {
+            return Enumerable.Empty<string>();
+        }
+
+        return user.UserRoles.Select(ur => ur.Role.Name);
+    }
+
+    public async Task AddUserToRoleAsync(int userId, string roleName)
+    {
+        var context = (AppDbContext)_context;
+        
+        // Get user
+        var user = await _dbSet.FindAsync(userId);
+        if (user == null)
+        {
+            throw new InvalidOperationException($"User with ID {userId} not found");
+        }
+        
+        // Get role
+        var role = await context.Roles.FirstOrDefaultAsync(r => r.Name == roleName);
+        if (role == null)
+        {
+            throw new InvalidOperationException($"Role '{roleName}' not found");
+        }
+        
+        // Check if user already has the role
+        var existingUserRole = await context.UserRoles
+            .FirstOrDefaultAsync(ur => ur.UserId == userId && ur.RoleId == role.Id);
+        
+        if (existingUserRole != null)
+        {
+            // User already has the role
+            return;
+        }
+        
+        // Add user to role
+        var userRole = new UserRole
+        {
+            UserId = userId,
+            RoleId = role.Id,
+            AssignedAt = DateTime.UtcNow
+        };
+        
+        context.UserRoles.Add(userRole);
+        await context.SaveChangesAsync();
+    }
+
+    public async Task RemoveUserFromRoleAsync(int userId, string roleName)
+    {
+        var context = (AppDbContext)_context;
+        
+        // Get role
+        var role = await context.Roles.FirstOrDefaultAsync(r => r.Name == roleName);
+        if (role == null)
+        {
+            throw new InvalidOperationException($"Role '{roleName}' not found");
+        }
+        
+        // Find user role
+        var userRole = await context.UserRoles
+            .FirstOrDefaultAsync(ur => ur.UserId == userId && ur.RoleId == role.Id);
+        
+        if (userRole != null)
+        {
+            context.UserRoles.Remove(userRole);
+            await context.SaveChangesAsync();
+        }
+    }
+
+    public async Task<bool> IsUserInRoleAsync(int userId, string roleName)
+    {
+        var context = (AppDbContext)_context;
+        
+        // Get role
+        var role = await context.Roles.FirstOrDefaultAsync(r => r.Name == roleName);
+        if (role == null)
+        {
+            return false;
+        }
+        
+        // Check if user is in role
+        return await context.UserRoles
+            .AnyAsync(ur => ur.UserId == userId && ur.RoleId == role.Id);
+    }
+}

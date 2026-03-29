@@ -1,0 +1,69 @@
+﻿using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+// using PetCare.Api.Data; // nếu DbContext ở namespace này
+using PetCare.Data;          // KHỚP namespace với AppDbContext.cs
+using FluentValidation;
+using FluentValidation.AspNetCore;
+using PetCare.Validators;
+using PetCare.DTOs;
+using PetCare.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// EF Core + MySQL (Pomelo)
+builder.Services.AddDbContext<AppDbContext>(opt =>
+{
+    var cs = builder.Configuration.GetConnectionString("Default");
+    opt.UseMySql(cs, ServerVersion.AutoDetect(cs));
+});
+
+// FluentValidation
+builder.Services.AddFluentValidationAutoValidation();
+builder.Services.AddScoped<IValidator<UserRegistrationDto>, UserRegistrationValidator>();
+
+// Application Services
+builder.Services.AddScoped<IAuthService, AuthService>();
+
+// MVC + Swagger
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+// (Tuỳ chọn) Bật log EF chi tiết khi DEV
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+
+var app = builder.Build();
+
+// Swagger Dev
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+// ⚠️ Nếu bạn test bằng http từ Android emulator/thiết bị, có thể tạm tắt HTTPS redirect ở DEV
+app.UseHttpsRedirection();
+
+app.UseAuthorization();
+app.MapControllers();
+
+// TỰ ĐỘNG APPLY MIGRATIONS khi khởi động
+using (var scope = app.Services.CreateScope())
+{
+    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    try
+    {
+        await db.Database.MigrateAsync();
+        app.Logger.LogInformation("✅ EF Migrate OK. Provider: {Provider}, CanConnect: {CanConnect}",
+            db.Database.ProviderName, await db.Database.CanConnectAsync());
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "❌ EF Migrate FAILED. Vui lòng kiểm tra ConnectionStrings:Default, quyền MySQL, hoặc migration.");
+        // Gợi ý: có thể throw lại để fail fast
+        // throw;
+    }
+}
+
+app.Run();

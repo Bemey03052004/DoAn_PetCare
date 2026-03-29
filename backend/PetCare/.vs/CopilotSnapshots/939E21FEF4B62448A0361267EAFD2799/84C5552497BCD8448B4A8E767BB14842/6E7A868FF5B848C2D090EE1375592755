@@ -1,0 +1,64 @@
+﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using PetCare.Data;
+using PetCare.Entities;
+
+namespace PetCare.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class PetsController(AppDbContext db) : ControllerBase
+{
+    [HttpGet]
+    public async Task<IActionResult> GetAll()
+    {
+        var pets = await db.Pets.Include(p => p.Owner).ToListAsync();
+        return Ok(pets);
+    }
+
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> GetById(int id)
+    {
+        var pet = await db.Pets.Include(p => p.Owner)
+            .FirstOrDefaultAsync(p => p.Id == id);
+        return pet is null ? NotFound() : Ok(pet);
+    }
+
+    [HttpPost]
+    public async Task<IActionResult> Create([FromBody] Pet pet)
+    {
+        // Kiểm tra Owner tồn tại
+        if (!await db.Users.AnyAsync(u => u.Id == pet.OwnerId))
+            return BadRequest($"OwnerId {pet.OwnerId} không tồn tại.");
+
+        db.Pets.Add(pet);
+        await db.SaveChangesAsync();
+        return CreatedAtAction(nameof(GetById), new { id = pet.Id }, pet);
+    }
+
+    [HttpPut("{id:int}")]
+    public async Task<IActionResult> Update(int id, [FromBody] Pet pet)
+    {
+        var existing = await db.Pets.FindAsync(id);
+        if (existing is null) return NotFound();
+
+        existing.Name = pet.Name;
+        existing.Species = pet.Species;
+        existing.AgeMonths = pet.AgeMonths;
+        existing.OwnerId = pet.OwnerId;
+
+        await db.SaveChangesAsync();
+        return Ok(existing);
+    }
+
+    [HttpDelete("{id:int}")]
+    public async Task<IActionResult> Delete(int id)
+    {
+        var existing = await db.Pets.FindAsync(id);
+        if (existing is null) return NotFound();
+
+        db.Pets.Remove(existing);
+        await db.SaveChangesAsync();
+        return NoContent();
+    }
+}
